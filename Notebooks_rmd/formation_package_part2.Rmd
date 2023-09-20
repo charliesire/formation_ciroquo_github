@@ -106,7 +106,7 @@ outputs = H(design)
 
  For every pair $(\tilde{K},n_{\mathrm{pc}})$, we obtain $m$ predicted maps by loo, k\_fold, training\_test
 
-We can compute the RMSE map: $$y^{\mathrm{RMSE}} = \sqrt{\frac{1}{n_{\mathrm{train}}} \sum_{i=1}^{n_{\mathrm{train}}} (y_{i} - \hat{y}_{i})^2}.$$
+We can compute the RMSE map: $$y^{\mathrm{RMSE}} = \sqrt{\frac{1}{m} \sum_{i=1}^{m} (y_{i} - \hat{y}_{i})^2}.$$
 
 Then, we choose to compute the quantile $90\%$ of each $y^{\mathrm{RMSE}}$.
 
@@ -131,6 +131,8 @@ ggplot(data = df_rmse) + geom_raster(aes(x = npc, y = ncoeff, fill = quantile_90
 
 We select $n_{coeff} = 250$ and $n_{pc} = 6$.
 
+We plot the rmse map.
+
 ```{r}
 idx = which(df_rmse$ncoeff == 250 & df_rmse$npc == 6)
 
@@ -138,13 +140,18 @@ rmse_map = list_rmse_loo$outputs_rmse[[idx]]
 loo_maps = list_rmse_loo$outputs_pred[[idx]]
 
 plot_map(rmse_map)
+```
 
+And we print $y_{k}$ and $\hat{y}_{k}$ with $k = \underset{i = 1,\dots,m}{argmax}\mid \mid y_{i}-\hat{y}_{i}\mid\mid$
+
+```{r}
 distance_func = function(A1,A2){return(sqrt(sum((A1-A2)^2)))}
 
 error_loo = Vectorize(function(i){distance_func(loo_maps[,,i], outputs[,,i])})(1:dim(loo_maps)[3])
 plot_map(outputs[,,which.max(error_loo)])
 plot_map(loo_maps[,,which.max(error_loo)])
 ```
+
 We then build the metamodel.
 
 For each pca axis, we plot the LOO predictions vs the true values.
