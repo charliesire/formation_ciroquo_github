@@ -1,0 +1,264 @@
+---
+title: "Formation FunQuant part 2"
+output: html_notebook
+---
+
+## Packages 
+
+```{r message=FALSE, warning=FALSE}
+library(devtools)
+install_github("tranvivielodie/GpOutput2D/GpOutput2D")
+install.packages("rlibkriging")
+
+install_github("CharlieSire/FunQuant", upgrade="never")
+```
+
+
+```{r message=FALSE, warning=FALSE}
+library(FunQuant)
+library(ggplot2)
+library(randtoolbox)
+library(evd)
+
+```
+
+## Variables
+
+We consider $X = (X_{1},X_{2}) \in \mathbb{R}^2$ a random input of a computer code $H$, with
+$$\left\{
+    \begin{array}{ll}
+        X_{1} \sim \mathcal{U}(-1,1)\\
+        X_{2} \sim tGEV(-0.4,0.1,0, -1, 1) \\
+        X_{1} \text{ and }X_{2}\text{ independent}
+    \end{array}
+\right.$$
+
+Where $tGEV(\mu,\sigma,\xi,a,b)$ is the generalized extreme value distribution of location $\mu$, scale $\sigma$ and shape $\xi$, truncated between $a$ and $b$.
+
+
+```{r}
+f2 = function(x){
+  res = 0
+  ptrunc = pgev(-1, loc=-0.4,scale=0.1) + 1 - pgev(1, loc=-0.4,scale=0.1)
+  if(x>=-1 & x < 1){res = dgev(x, loc=-0.4,scale=0.1)/(1-ptrunc)}
+  return(res)
+}
+f1 = function(x){
+  if(x > -1 & x < 1){return(1/2)}
+  else{return(0)}
+}
+fX = function(x){f1(x[1])*f2(x[2])}
+```
+
+The density of $X_{2}$ is represented in the next plot
+
+```{r}
+plot(seq(-1,1,l=1000), Vectorize(f2)(seq(-1,1,l=1000)), type = "l")
+```
+
+The computer code $H$ return, for a given input $x \in \mathbb{R}^{2}$, a $20\times 20$ map.
+
+We have $H(x) \approx 0$ if $x_{2} < -0.1.$
+
+```{r}
+step_conti = function(x){1/2*(1+2/pi*atan((x+0.1)*10^5))}
+
+H <- function(X){
+  Zgrid <- expand.grid(z1 = seq(-5,5,l=20),z2 = seq(-5,5,l=20))
+  n<-nrow(X)
+  Y <- lapply(1:n, function(i){step_conti(X[i,2])*(X[i,2]*X[i,1]*exp(-((0.8*Zgrid$z1+0.2*Zgrid$z2-10*X[i,1])**2)/(60*X[i,1]**2))*(Zgrid$z1-Zgrid$z2)*cos(X[i,1]*4)^2/log(7+Zgrid$z2+2.01+X[i,1]+X[i,2]) - Zgrid$z1/40*dnorm(cos(X[i,1])) + abs(Zgrid$z2)/30*dnorm(X[i,2]) + X[i,1] * sin(18.0 * X[i,1])/50)})
+  Ymaps<- array(unlist(Y),dim=c(20,20,n))
+  return(abs(Ymaps))
+}
+```
+
+```{r}
+plot_map = function(map, max = NULL, min = NULL){
+  prototypes_toplot = expand.grid(seq(-5,5,l=20),seq(-5,5,l=20))
+  prototypes_toplot$f = as.numeric(map)
+  if(is.null(max))
+  {p = ggplot(prototypes_toplot) + geom_raster(aes(x = Var1, y = Var2, fill = f)) + scale_fill_continuous(type = "viridis",direction = -1, name = "h") + theme_bw()}
+  else{p = ggplot(prototypes_toplot) + geom_raster(aes(x = Var1, y = Var2, fill = f)) + scale_fill_continuous(type = "viridis", direction = -1, limits = c(min, max), name = "h") + theme_bw()  + theme(legend.text = element_text(size=13),legend.title = element_text(size=13))}
+  return(p)
+}
+```
+
+```{r}
+plot_map(H(matrix(c(0.8,-0.2), nrow=1)))
+plot_map(H(matrix(c(0.8,0.8), nrow=1)))
+plot_map(H(matrix(c(0,0.3), nrow=1)))
+```
+
+## Design of experiments 
+
+Sobol sequence of 200 points 
+
+```{r}
+design = sobol(n=200,dim = 2)*2-1
+
+outputs = H(design)
+
+```
+
+## Tuning of the FPCA parameters
+
+### Tuning with rmse
+
+ For every pair $(\tilde{K},n_{\mathrm{pc}})$, we obtain $m$ predicted maps by loo, k\_fold, training\_test
+
+We can compute the RMSE map: $$y^{\mathrm{RMSE}} = \sqrt{\frac{1}{n_{\mathrm{train}}} \sum_{i=1}^{n_{\mathrm{train}}} (y_{i} - \hat{y}_{i})^2}.$$
+
+Then, we choose to compute the quantile $90\%$ of each $y^{\mathrm{RMSE}}$.
+
+```{r}
+set.seed(15)
+list_rmse_loo = rmse_loo(
+  outputs = outputs, 
+  design = design, 
+  npc_vec = 3:6, 
+  ncoeff_vec = c(100,250,400),
+  return_pred = TRUE)
+
+
+quantile_90 = sapply(list_rmse_loo$outputs_rmse, 
+                     function(x){quantile(x, 1)[[1]]})
+
+df_rmse = as.data.frame(cbind(list_rmse_loo$grid_cv, quantile_90))
+
+ggplot(data = df_rmse) + geom_raster(aes(x = npc, y = ncoeff, fill = quantile_90)) + theme_bw()
+
+```
+
+We select $n_{coeff} = 250$ and $n_{pc} = 6$.
+
+```{r}
+idx = which(df_rmse$ncoeff == 250 & df_rmse$npc == 6)
+
+rmse_map = list_rmse_loo$outputs_rmse[[idx]]
+loo_maps = list_rmse_loo$outputs_pred[[idx]]
+
+plot_map(rmse_map)
+
+distance_func = function(A1,A2){return(sqrt(sum((A1-A2)^2)))}
+
+error_loo = Vectorize(function(i){distance_func(loo_maps[,,i], outputs[,,i])})(1:dim(loo_maps)[3])
+plot_map(outputs[,,which.max(error_loo)])
+plot_map(loo_maps[,,which.max(error_loo)])
+```
+We then build the metamodel.
+
+For each pca axis, we plot the LOO predictions vs the true values.
+
+```{r}
+mm = fit_metamodel(design_train = design, outputs_train = outputs, ncoeff = 250, npc = 6, kernel = "matern5_2") 
+
+
+list_loo = list()
+for(i in 1:length(mm$model)){
+ list_loo[[i]] = mm$model[[i]]$leaveOneOutVec(theta = mm$model[[i]]$theta())$mean
+ plot(x = mm$fp$x[,i], y = list_loo[[i]])
+}
+
+```
+### Tuning with probabilities
+
+FunQuant offers the possibilities to tune the hyperparameters regarding the predicted membership probabilities for a given set of prototypes.
+
+We can first quantize $H(X)$ with the training maps.
+The design of experiments can be seen as a uniform distribution, that we use for the importance sampling weights.
+
+```{r}
+
+g = function(x){
+  if(sum(x > -1) == length(x) & sum(x < 1) == length(x)){return(1/4)}
+  else{return(0)}
+}
+
+density_ratio = compute_density_ratio(f = fX,
+                                      g = g, inputs = design)
+
+```
+
+
+```{r}
+set.seed(1)
+res_proto_1 = find_prototypes(nb_cells = 6,data = outputs, multistart = 5,density_ratio = density_ratio)
+```
+
+```{r}
+for(i in 1:length(res_proto_1$prototypes)){print(plot_map(res_proto_1$prototypes[[i]]))}
+res_proto_1$probas
+```
+
+```{r}
+set.seed(10)
+list_probas_loo = probas_loo(
+  outputs = outputs, 
+  design = design, 
+  density_ratio = density_ratio, 
+  prototypes = res_proto_1$prototypes, 
+  npc_vec = 3:6, 
+  ncoeff_vec = c(100,250,400))
+
+list_probas_loo$error
+
+
+```
+
+## Add classification
+
+We can add a classification step to better predict the empty maps.
+
+We will create two classes:
+
+- The maps for which the sum of the pixels is < 0.01
+- The maps for which the sum of the pixels is > 0.01
+
+```{r}
+sum_depth = Vectorize(function(i){
+  sum(outputs[,,i])})(1:dim(outputs)[3])
+```
+
+We test the following parameters of the random forest:
+
+- classwt = c(0.1,0.9), c(0.3,0.7), c(0.5,0.5), c(0.7,0.3), c(0.9,0.1)
+- nodesize = c(1,3,5)
+
+And for each pair of hyperparameters, we count the number of missclassified elements 
+
+```{r}
+set.seed(1)
+
+df_search = expand.grid(classwt1 = seq(0.1 ,0.9 ,0.2), nodesize = c(1 ,3 ,5))
+list_search = list ("nodesize" = as.list(df_search[ ,2]), "classwt" = lapply(1:nrow(df_search), function(i){c(df_search[i ,1] , 1-df_search[i,1])}))
+
+rf_kfold = rf_classif_k_fold(x = design, y = as.factor(sum_depth > 0.01), list_search = list_search, nb_folds = 10)
+
+sapply(1: length(rf_kfold), function(i){sum((sum_depth > 0.01) != (rf_kfold[[i]] - 1))})
+
+
+
+```
+All the pairs lead to the same result, one element is missclassified.
+
+For the default pair of hyperparameters, classwt = c(0.5,0.5) and nodesize = 1, we observe the k-fold rmse map. And we do the same without the classification to compare
+
+```{r}
+set.seed(10)
+kfold_classif = rf_rmse_k_fold(design= design, outputs = outputs, list_search = list("nodesize" = as.list(1), "classwt" = list(c(0.5,0.5))), nb_folds = 10, threshold_classification = 0.01, threshold_fpca = 0.01, ncoeff = 250, npc=6, return_pred = TRUE)
+
+kfold_noclassif = rmse_k_fold(design = design, outputs = outputs, nb_folds = 10,npc_vec = 6,ncoeff_vec = 250)
+
+plot_map(kfold_noclassif$outputs_rmse[[1]]-kfold_classif$outputs_rmse[[1]])
+
+hist(as.numeric(kfold_noclassif$outputs_rmse[[1]]-kfold_classif$outputs_rmse[[1]]))
+```
+
+```{r}
+
+set.seed(3)
+proba_error = rf_probas_k_fold(design= design, outputs = outputs, list_search = list("nodesize" = as.list(1), "classwt" = list(c(0.5,0.5))), nb_folds = 10, density_ratio = density_ratio, prototypes = res_proto_1$prototypes, threshold_classification = 0.01, threshold_fpca = 0.01, ncoeff = 250, npc=6, return_pred = FALSE)
+
+
+proba_error$error
+```
